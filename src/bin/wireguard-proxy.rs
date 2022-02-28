@@ -58,10 +58,10 @@ fn main() {
                                           listen on for UDP packets to send
                                           back over the TCP connection,
                                           default: 127.0.0.1:30000-40000
- -tk, --tls-key <ip:port>                 TLS key to listen with,
-                                          requires --tls-cert also
- -tc, --tls-cert <ip:port>                TLS cert to listen with,
-                                          requires --tls-key also
+ -tk, --tls-key <key.pem>                 TLS key file to use, also
+                                          requires --tls-cert
+ -tc, --tls-cert <cert.pem>               TLS cert file to use, also
+                                          requires --tls-key
  Note: with both --tls-key and --tls-cert,
        - means stdin,
        also the same file can work for both if you combine them into

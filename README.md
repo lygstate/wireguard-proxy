@@ -7,10 +7,11 @@
 Proxy wireguard UDP packets over TCP/TLS
 
 `wireguard-proxy` has 2 modes:
+
 - server-side daemon to accept TCP/TLS connections from multiple clients and pipe data to and from the specified UDP port
 - client-side daemon that accepts UDP packets on a local port from a single client, connects to a single remote TCP/TLS port, and pipes data between them
 
-```
+```c
 $ wireguard-proxy -h
 usage: wireguard-proxy [options...]
  Client Mode (requires --tcp-target):
@@ -40,10 +41,10 @@ usage: wireguard-proxy [options...]
                                           listen on for UDP packets to send
                                           back over the TCP connection,
                                           default: 127.0.0.1:30000-40000
- -tk, --tls-key <ip:port>                 TLS key to listen with,
-                                          requires --tls-cert also
- -tc, --tls-cert <ip:port>                TLS cert to listen with,
-                                          requires --tls-key also
+ -tk, --tls-key <key.pem>                 TLS key file to use, also
+                                          requires --tls-cert
+ -tc, --tls-cert <cert.pem>               TLS cert file to use, also
+                                          requires --tls-key
  Note: with both --tls-key and --tls-cert,
        - means stdin,
        also the same file can work for both if you combine them into
@@ -76,7 +77,7 @@ Binaries:
 Building:
 
 - `cargo build --release` - async build with TLS support supplied by rustls
-- `cargo build --release --no-default-features ` - minimal build without TLS support, no dependencies
+- `cargo build --release --no-default-features` - minimal build without TLS support, no dependencies
 - `cargo build --release --no-default-features --feature tls` - links to system openssl
 - `cargo build --release --no-default-features --feature openssl_vendored` - compiles vendored openssl and link to it
 
@@ -95,7 +96,7 @@ Testing with GNU netcat:
 - `nc 127.0.0.1 5555` connect directly to local tcp wireguard-proxy port to send/recieve data
 - so to test through wireguard-proxy run first and last command while it's running, type in both places
 
-# OpenSSL cert generation
+## OpenSSL cert generation
 
 Quick commands to generate your own certificate to use with wireguard-proxy, note if you are actually only sending
 wireguard packets over this, the TLS layer doesn't really need to provide any security or authentication, only obfuscation
@@ -129,18 +130,18 @@ openssl req -new -x509 -sha256 -days 3650 -nodes -subj "/C=US/CN=example.org" -o
 openssl x509 -in cert.pem -noout -text
 ```
 
-# License
+## License
 
 This project is licensed under either of
 
- * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or
-   http://www.apache.org/licenses/LICENSE-2.0)
- * MIT license ([LICENSE-MIT](LICENSE-MIT) or
-   http://opensource.org/licenses/MIT)
+- Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or
+   <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or
+   <http://opensource.org/licenses/MIT>)
 
 at your option.
 
-### Contribution
+## Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in die by you, as defined in the Apache-2.0 license, shall be

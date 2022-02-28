@@ -128,10 +128,10 @@ fn main() {
                                  before terminating, default: {}
 
  TLS option for self tests only, otherwise self tests are plaintext only:
- -tk, --tls-key <ip:port>        TLS key to listen with,
-                                 requires --tls-cert also
- -tc, --tls-cert <ip:port>       TLS cert to listen with,
-                                 requires --tls-key also
+ -tk, --tls-key <key.pem>                 TLS key file to use, also
+                                          requires --tls-cert
+ -tc, --tls-cert <cert.pem>               TLS cert file to use, also
+                                          requires --tls-key
  --pinnedpubkey <sha256_hashes>  Public key to verify peer against,
                                  format is any number of base64 encoded
                                  sha256 hashes preceded by "sha256//"
