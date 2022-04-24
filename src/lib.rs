@@ -135,15 +135,17 @@ impl ProxyClient {
         }
     }
 
-    fn tcp_connect(&self) -> Result<TcpStream> {
-        let tcp_stream = TcpStream::connect(&self.tcp_target)?;
+    fn tcp_connect(&self) -> Result<tokio::net::TcpStream> {
+        let tcp_stream = TcpStream::connect(&self.tcp_target).expect("connect to tcp server failed?");
         tcp_stream.set_read_timeout(self.socket_timeout)?;
+        let tcp_stream = tokio::net::TcpStream::from_std(tcp_stream).expect("how could this tokio tcp fail?");
         Ok(tcp_stream)
     }
 
-    fn udp_connect(&self) -> Result<UdpSocket> {
+    fn udp_connect(&self) -> Result<tokio::net::UdpSocket> {
         let udp_socket = UdpSocket::bind(&self.udp_host)?;
         udp_socket.set_read_timeout(self.socket_timeout)?;
+        let udp_socket = tokio::net::UdpSocket::from_std(udp_socket).expect("how could this tokio udp fail?");
         Ok(udp_socket)
     }
 }

@@ -1,7 +1,7 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::runtime::Runtime;
-use tokio_rustls::webpki::DNSNameRef;
+use tokio_rustls::{rustls, rustls::ClientConfig, webpki, webpki::DNSNameRef, TlsConnector};
 
 use crate::error;
 use crate::error::Result;
@@ -105,12 +105,9 @@ impl ProxyClient {
 
         let udp_socket = self.udp_connect()?;
 
-        TcpUdpPipe::new(
-            tokio::net::TcpStream::from_std(tcp_stream).expect("how could this tokio tcp fail?"),
-            UdpSocket::from_std(udp_socket).expect("how could this tokio udp fail?"),
-        )
-        .shuffle_after_first_udp()
-        .await
+        TcpUdpPipe::new(tcp_stream, udp_socket)
+            .shuffle_after_first_udp()
+            .await
     }
 
     pub fn start(&self) -> Result<usize> {
@@ -124,12 +121,6 @@ impl ProxyClient {
         hostname: Option<&str>,
         pinnedpubkey: Option<&str>,
     ) -> Result<usize> {
-        let tcp_stream = self.tcp_connect()?;
-        let tcp_stream =
-            tokio::net::TcpStream::from_std(tcp_stream).expect("how could this tokio tcp fail?");
-
-        use tokio_rustls::{rustls::ClientConfig, TlsConnector};
-
         let mut config = ClientConfig::new();
         config
             .dangerous()
@@ -157,17 +148,16 @@ impl ProxyClient {
 
         let connector = TlsConnector::from(Arc::new(config));
 
+        let tcp_stream = self.tcp_connect()?;
+
         let tcp_stream = connector.connect(hostname, tcp_stream).await?;
 
         let udp_socket = self.udp_connect()?;
 
         // we want to wait for first udp packet from client first, to set the target to respond to
-        TcpUdpPipe::new(
-            tcp_stream,
-            UdpSocket::from_std(udp_socket).expect("how could this tokio udp fail?"),
-        )
-        .shuffle_after_first_udp()
-        .await
+        TcpUdpPipe::new(tcp_stream, udp_socket)
+            .shuffle_after_first_udp()
+            .await
     }
 
     pub fn start_tls(&self, hostname: Option<&str>, pinnedpubkey: Option<&str>) -> Result<usize> {
@@ -176,9 +166,6 @@ impl ProxyClient {
         rt.block_on(async { self.start_tls_async(hostname, pinnedpubkey).await })
     }
 }
-
-use tokio_rustls::rustls;
-use tokio_rustls::webpki;
 
 struct DummyCertVerifier;
 
