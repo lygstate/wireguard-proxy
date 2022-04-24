@@ -129,7 +129,7 @@ impl ProxyClient {
         tcp_stream
     }
 
-    async fn udp_connect(&self) -> core::result::Result<tokio::net::UdpSocket, std::io::Error> {
+    async fn udp_bind(&self) -> core::result::Result<tokio::net::UdpSocket, std::io::Error> {
         let udp_socket = tokio::net::UdpSocket::bind(&self.udp_host).await;
         udp_socket
     }

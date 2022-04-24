@@ -106,7 +106,7 @@ impl ProxyClient {
     pub async fn start_async(&self) -> Result<usize> {
         let tcp_stream = self.tcp_connect().await?;
 
-        let udp_socket = self.udp_connect().await?;
+        let udp_socket = self.udp_bind().await?;
 
         TcpUdpPipe::new(tcp_stream, udp_socket)
             .shuffle_after_first_udp()
@@ -151,7 +151,7 @@ impl ProxyClient {
 
         let tcp_stream = connector.connect(server_name, tcp_stream).await?;
 
-        let udp_socket = self.udp_connect().await?;
+        let udp_socket = self.udp_bind().await?;
 
         // we want to wait for first udp packet from client first, to set the target to respond to
         TcpUdpPipe::new(tcp_stream, udp_socket)
