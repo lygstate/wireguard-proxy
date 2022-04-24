@@ -1,8 +1,5 @@
 use core::result;
 
-#[cfg(not(any(feature = "async")))]
-pub type IoResult<T> = result::Result<T, std::io::Error>;
-
 pub type Result<T> = result::Result<T, Error>;
 
 #[derive(Debug)]
@@ -34,11 +31,3 @@ impl From<std::io::Error> for Error {
         Error::new(&format!("{}", value))
     }
 }
-
-/*
-impl From<std::option::NoneError> for Error {
-    fn from(value: std::option::NoneError) -> Self {
-        Error::new(value.description())
-    }
-}
-*/

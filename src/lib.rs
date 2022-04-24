@@ -1,4 +1,4 @@
-use std::net::{UdpSocket};
+use std::net::UdpSocket;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -107,21 +107,10 @@ pub struct ProxyServerClientHandler {
     pub socket_timeout: Option<Duration>,
 }
 
-#[cfg(any(feature = "async"))]
 #[path = ""]
 mod net {
     mod asyncmod;
 }
-
-#[cfg(not(any(feature = "async")))]
-#[path = ""]
-mod net {
-
-
-
-    mod syncmod;
-}
-
 
 impl ProxyClient {
     pub fn new(udp_host: String, tcp_target: String, secs: u64) -> ProxyClient {
