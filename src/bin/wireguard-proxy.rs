@@ -13,7 +13,11 @@ fn main() {
         println!("TLS support: tokio-rustls");
         #[cfg(all(feature = "openssl_vendored", not(feature = "async")))]
         println!("TLS support: Static/Vendored OpenSSL");
-        #[cfg(all(feature = "tls", not(feature = "openssl_vendored"), not(feature = "async")))]
+        #[cfg(all(
+            feature = "tls",
+            not(feature = "openssl_vendored"),
+            not(feature = "async")
+        ))]
         println!("TLS support: System OpenSSL");
         return;
     }
@@ -29,8 +33,9 @@ fn main() {
         (tcp_target.is_none() && tcp_host.is_none()) ||
         // but both cannot be set
         (tcp_target.is_some() && tcp_host.is_some())
-        {
-        println!(r#"usage: wireguard-proxy [options...]
+    {
+        println!(
+            r#"usage: wireguard-proxy [options...]
  Client Mode (requires --tcp-target):
  -tt, --tcp-target <ip:port>     TCP target to send packets to, where
                                  wireguard-proxy server is running
@@ -84,7 +89,9 @@ fn main() {
    --socket-timeout 5 is WGP_SOCKET_TIMEOUT=5
    --tls is WGP_TLS=1 or WGP_TLS=true
    WGP_TLS=0 or WGP_TLS=false would be like not sending --tls
-        "#, default_udp_host_target, default_udp_host_target, default_socket_timeout);
+        "#,
+            default_udp_host_target, default_udp_host_target, default_socket_timeout
+        );
         return;
     }
 
@@ -99,7 +106,8 @@ fn main() {
 
 fn client(tcp_target: &str, socket_timeout: u64, args: Args) {
     let proxy_client = ProxyClient::new(
-        args.get_str(&["-uh", "--udp-host"], "127.0.0.1:51820").to_owned(),
+        args.get_str(&["-uh", "--udp-host"], "127.0.0.1:51820")
+            .to_owned(),
         tcp_target.to_owned(),
         socket_timeout,
     );
@@ -108,23 +116,28 @@ fn client(tcp_target: &str, socket_timeout: u64, args: Args) {
 
     println!(
         "udp_host: {}, tcp_target: {}, socket_timeout: {:?}, tls: {}",
-        proxy_client.udp_host,
-        proxy_client.tcp_target,
-        proxy_client.socket_timeout,
-        tls,
+        proxy_client.udp_host, proxy_client.tcp_target, proxy_client.socket_timeout, tls,
     );
 
     if tls {
-        let hostname = args.get_option(&["--tls-hostname"]).or_else(|| tcp_target.split(":").next().map(&str::to_owned));
+        let hostname = args
+            .get_option(&["--tls-hostname"])
+            .or_else(|| tcp_target.split(":").next().map(&str::to_owned));
         let pinnedpubkey = args.get_option(&["--pinnedpubkey"]);
-        proxy_client.start_tls(hostname.as_ref().map(String::as_str), pinnedpubkey.as_ref().map(String::as_str)).expect("error running tls proxy_client");
+        proxy_client
+            .start_tls(
+                hostname.as_ref().map(String::as_str),
+                pinnedpubkey.as_ref().map(String::as_str),
+            )
+            .expect("error running tls proxy_client");
     } else {
         proxy_client.start().expect("error running proxy_client");
     }
 }
 
 fn server(tcp_host: &str, socket_timeout: u64, args: Args) {
-    let udp_bind_host_range_str = args.get_str(&["-ur", "--udp-bind-host-range"], "127.0.0.1:30000-40000");
+    let udp_bind_host_range_str =
+        args.get_str(&["-ur", "--udp-bind-host-range"], "127.0.0.1:30000-40000");
     let mut udp_bind_host_range = udp_bind_host_range_str.split(":");
     let udp_host = udp_bind_host_range
         .next()
@@ -148,7 +161,8 @@ fn server(tcp_host: &str, socket_timeout: u64, args: Args) {
 
     let proxy_server = ProxyServer::new(
         tcp_host.to_owned(),
-        args.get_str(&["-ut", "--udp-target"], "127.0.0.1:51820").to_owned(),
+        args.get_str(&["-ut", "--udp-target"], "127.0.0.1:51820")
+            .to_owned(),
         udp_host.to_string(),
         udp_low_port,
         udp_high_port,
@@ -168,7 +182,9 @@ fn server(tcp_host: &str, socket_timeout: u64, args: Args) {
     );
 
     if tls_key.is_some() && tls_cert.is_some() {
-        proxy_server.start_tls(&tls_key.unwrap(), &tls_cert.unwrap()).expect("error running TLS proxy_server");
+        proxy_server
+            .start_tls(&tls_key.unwrap(), &tls_cert.unwrap())
+            .expect("error running TLS proxy_server");
     } else if tls_key.is_none() && tls_cert.is_none() {
         proxy_server.start().expect("error running proxy_server");
     } else {
