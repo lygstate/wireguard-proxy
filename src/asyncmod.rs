@@ -1,6 +1,5 @@
-
-use tokio::net::UdpSocket;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UdpSocket;
 use tokio::runtime::Runtime;
 use tokio_rustls::webpki::DNSNameRef;
 
@@ -8,14 +7,17 @@ use crate::error;
 use crate::error::Result;
 use crate::*;
 
-pub struct TcpUdpPipe<T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 'static> {
+pub struct TcpUdpPipe<
+    T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 'static,
+> {
     buf: [u8; 2050], // 2048 + 2 for len
     tcp_stream: T,
     udp_socket: UdpSocket,
 }
 
-impl<T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 'static> TcpUdpPipe<T> {
-
+impl<T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 'static>
+    TcpUdpPipe<T>
+{
     pub fn new(tcp_stream: T, udp_socket: UdpSocket) -> TcpUdpPipe<T> {
         TcpUdpPipe {
             tcp_stream,
@@ -50,10 +52,12 @@ impl<T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 
             // Sometimes, the rust type inferencer needs
             // a little help
             #[allow(unreachable_code)]
-                {
-                    unsafe { std::hint::unreachable_unchecked(); }
-                    Ok::<_, error::Error>(())
+            {
+                unsafe {
+                    std::hint::unreachable_unchecked();
                 }
+                Ok::<_, error::Error>(())
+            }
         });
 
         let mut send_buf = self.buf.clone(); // or zeroed or?
@@ -70,14 +74,20 @@ impl<T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 
         }
 
         #[allow(unreachable_code)]
-            {
-                unsafe { std::hint::unreachable_unchecked(); }
-                Ok(0)
+        {
+            unsafe {
+                std::hint::unreachable_unchecked();
             }
+            Ok(0)
+        }
     }
 }
 
-async fn send_udp<T: AsyncWriteExt + std::marker::Unpin + 'static>(buf: &mut [u8; 2050], tcp_stream: &mut T, len: usize) -> Result<()> {
+async fn send_udp<T: AsyncWriteExt + std::marker::Unpin + 'static>(
+    buf: &mut [u8; 2050],
+    tcp_stream: &mut T,
+    len: usize,
+) -> Result<()> {
     #[cfg(feature = "verbose")]
     println!("udp got len: {}", len);
 
@@ -90,35 +100,45 @@ async fn send_udp<T: AsyncWriteExt + std::marker::Unpin + 'static>(buf: &mut [u8
 }
 
 impl ProxyClient {
-
     pub async fn start_async(&self) -> Result<usize> {
         let tcp_stream = self.tcp_connect()?;
 
         let udp_socket = self.udp_connect()?;
 
-        TcpUdpPipe::new(tokio::net::TcpStream::from_std(tcp_stream).expect("how could this tokio tcp fail?"), UdpSocket::from_std(udp_socket).expect("how could this tokio udp fail?"))
-            .shuffle_after_first_udp().await
+        TcpUdpPipe::new(
+            tokio::net::TcpStream::from_std(tcp_stream).expect("how could this tokio tcp fail?"),
+            UdpSocket::from_std(udp_socket).expect("how could this tokio udp fail?"),
+        )
+        .shuffle_after_first_udp()
+        .await
     }
 
     pub fn start(&self) -> Result<usize> {
         let mut rt = Runtime::new()?;
 
-        rt.block_on(async {
-            self.start_async().await
-        })
+        rt.block_on(async { self.start_async().await })
     }
 
-    pub async fn start_tls_async(&self, hostname: Option<&str>, pinnedpubkey: Option<&str>) -> Result<usize> {
+    pub async fn start_tls_async(
+        &self,
+        hostname: Option<&str>,
+        pinnedpubkey: Option<&str>,
+    ) -> Result<usize> {
         let tcp_stream = self.tcp_connect()?;
-        let tcp_stream = tokio::net::TcpStream::from_std(tcp_stream).expect("how could this tokio tcp fail?");
+        let tcp_stream =
+            tokio::net::TcpStream::from_std(tcp_stream).expect("how could this tokio tcp fail?");
 
-        use tokio_rustls::{ TlsConnector, rustls::ClientConfig };
+        use tokio_rustls::{rustls::ClientConfig, TlsConnector};
 
         let mut config = ClientConfig::new();
-        config.dangerous().set_certificate_verifier(match pinnedpubkey {
-            Some(pinnedpubkey) => Arc::new(PinnedpubkeyCertVerifier { pinnedpubkey: pinnedpubkey.to_owned() }),
-            None => Arc::new(DummyCertVerifier{}),
-        });
+        config
+            .dangerous()
+            .set_certificate_verifier(match pinnedpubkey {
+                Some(pinnedpubkey) => Arc::new(PinnedpubkeyCertVerifier {
+                    pinnedpubkey: pinnedpubkey.to_owned(),
+                }),
+                None => Arc::new(DummyCertVerifier {}),
+            });
 
         let hostname = match hostname {
             Some(hostname) => match DNSNameRef::try_from_ascii_str(hostname) {
@@ -137,21 +157,23 @@ impl ProxyClient {
 
         let connector = TlsConnector::from(Arc::new(config));
 
-        let tcp_stream= connector.connect(hostname, tcp_stream).await?;
+        let tcp_stream = connector.connect(hostname, tcp_stream).await?;
 
         let udp_socket = self.udp_connect()?;
 
         // we want to wait for first udp packet from client first, to set the target to respond to
-        TcpUdpPipe::new(tcp_stream, UdpSocket::from_std(udp_socket).expect("how could this tokio udp fail?"))
-            .shuffle_after_first_udp().await
+        TcpUdpPipe::new(
+            tcp_stream,
+            UdpSocket::from_std(udp_socket).expect("how could this tokio udp fail?"),
+        )
+        .shuffle_after_first_udp()
+        .await
     }
 
     pub fn start_tls(&self, hostname: Option<&str>, pinnedpubkey: Option<&str>) -> Result<usize> {
         let mut rt = Runtime::new()?;
 
-        rt.block_on(async {
-            self.start_tls_async(hostname, pinnedpubkey).await
-        })
+        rt.block_on(async { self.start_tls_async(hostname, pinnedpubkey).await })
     }
 }
 
@@ -161,11 +183,13 @@ use tokio_rustls::webpki;
 struct DummyCertVerifier;
 
 impl rustls::ServerCertVerifier for DummyCertVerifier {
-    fn verify_server_cert(&self,
-                          _roots: &rustls::RootCertStore,
-                          _certs: &[rustls::Certificate],
-                          _hostname: webpki::DNSNameRef<'_>,
-                          _ocsp: &[u8]) -> core::result::Result<rustls::ServerCertVerified, rustls::TLSError> {
+    fn verify_server_cert(
+        &self,
+        _roots: &rustls::RootCertStore,
+        _certs: &[rustls::Certificate],
+        _hostname: webpki::DNSNameRef<'_>,
+        _ocsp: &[u8],
+    ) -> core::result::Result<rustls::ServerCertVerified, rustls::TLSError> {
         // verify nothing, subject to MITM
         Ok(rustls::ServerCertVerified::assertion())
     }
@@ -176,11 +200,13 @@ struct PinnedpubkeyCertVerifier {
 }
 
 impl rustls::ServerCertVerifier for PinnedpubkeyCertVerifier {
-    fn verify_server_cert(&self,
-                          _roots: &rustls::RootCertStore,
-                          certs: &[rustls::Certificate],
-                          _hostname: webpki::DNSNameRef<'_>,
-                          _ocsp: &[u8]) -> core::result::Result<rustls::ServerCertVerified, rustls::TLSError> {
+    fn verify_server_cert(
+        &self,
+        _roots: &rustls::RootCertStore,
+        certs: &[rustls::Certificate],
+        _hostname: webpki::DNSNameRef<'_>,
+        _ocsp: &[u8],
+    ) -> core::result::Result<rustls::ServerCertVerified, rustls::TLSError> {
         if certs.is_empty() {
             return Err(rustls::TLSError::NoCertificatesPresented);
         }
@@ -204,12 +230,14 @@ impl rustls::ServerCertVerifier for PinnedpubkeyCertVerifier {
             }
         }
 
-        Err(rustls::TLSError::General(format!("pubkey '{}' not found in allowed list '{}'", pubkey, self.pinnedpubkey)))
+        Err(rustls::TLSError::General(format!(
+            "pubkey '{}' not found in allowed list '{}'",
+            pubkey, self.pinnedpubkey
+        )))
     }
 }
 
 impl ProxyServer {
-
     pub async fn start_async(&self) -> Result<()> {
         let mut listener = tokio::net::TcpListener::bind(&self.tcp_host).await?;
         println!("Listening for connections on {}", &self.tcp_host);
@@ -219,32 +247,32 @@ impl ProxyServer {
             let client_handler = self.client_handler.clone();
             tokio::spawn(async move {
                 client_handler
-                    .handle_client_async(stream).await
+                    .handle_client_async(stream)
+                    .await
                     .expect("error handling connection");
             });
         }
 
         #[allow(unreachable_code)]
-            {
-                unsafe { std::hint::unreachable_unchecked(); }
-                Ok(())
+        {
+            unsafe {
+                std::hint::unreachable_unchecked();
             }
+            Ok(())
+        }
     }
 
     pub fn start(&self) -> Result<()> {
         let mut rt = Runtime::new()?;
 
-        rt.block_on(async {
-            self.start_async().await
-        })
+        rt.block_on(async { self.start_async().await })
     }
 
     pub async fn start_tls_async(&self, tls_key: &str, tls_cert: &str) -> Result<()> {
-
         use std::fs::File;
-        use std::io::BufReader;
         use std::io;
-        use tokio_rustls::rustls::internal::pemfile::{ certs, pkcs8_private_keys };
+        use std::io::BufReader;
+        use tokio_rustls::rustls::internal::pemfile::{certs, pkcs8_private_keys};
 
         let mut tls_key = pkcs8_private_keys(&mut BufReader::new(File::open(tls_key)?))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?;
@@ -257,7 +285,8 @@ impl ProxyServer {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))?;
 
         let mut config = rustls::ServerConfig::new(rustls::NoClientAuth::new());
-        config.set_single_cert(tls_cert, tls_key)
+        config
+            .set_single_cert(tls_cert, tls_key)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
 
@@ -270,35 +299,46 @@ impl ProxyServer {
             let acceptor = acceptor.clone();
 
             tokio::spawn(async move {
-                let stream = acceptor.accept(stream).await.expect("failed to wrap with TLS?");
+                let stream = acceptor
+                    .accept(stream)
+                    .await
+                    .expect("failed to wrap with TLS?");
 
                 client_handler
-                    .handle_client_async(stream).await
+                    .handle_client_async(stream)
+                    .await
                     .expect("error handling connection");
             });
         }
 
         #[allow(unreachable_code)]
-            {
-                unsafe { std::hint::unreachable_unchecked(); }
-                Ok(())
+        {
+            unsafe {
+                std::hint::unreachable_unchecked();
             }
+            Ok(())
+        }
     }
 
     pub fn start_tls(&self, tls_key: &str, tls_cert: &str) -> Result<()> {
         let mut rt = Runtime::new()?;
 
-        rt.block_on(async {
-            self.start_tls_async(tls_key, tls_cert).await
-        })
+        rt.block_on(async { self.start_tls_async(tls_key, tls_cert).await })
     }
 }
 
 impl ProxyServerClientHandler {
-
-    pub async fn handle_client_async<T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 'static>(&self, tcp_stream: T) -> Result<usize> {
-        TcpUdpPipe::new(tcp_stream,
-                                   UdpSocket::from_std(self.udp_bind()?).expect("how could this tokio udp fail?")
-        ).shuffle().await
+    pub async fn handle_client_async<
+        T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 'static,
+    >(
+        &self,
+        tcp_stream: T,
+    ) -> Result<usize> {
+        TcpUdpPipe::new(
+            tcp_stream,
+            UdpSocket::from_std(self.udp_bind()?).expect("how could this tokio udp fail?"),
+        )
+        .shuffle()
+        .await
     }
 }
