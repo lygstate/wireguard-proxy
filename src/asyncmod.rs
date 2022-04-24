@@ -1,10 +1,12 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::runtime::Runtime;
-use tokio_rustls::{rustls, rustls::ClientConfig, webpki, webpki::DNSNameRef, TlsConnector};
+use tokio_rustls::{rustls, rustls::Certificate, rustls::PrivateKey, webpki, TlsConnector};
 
-use crate::error;
-use crate::error::Result;
+use std::convert::TryInto;
+use std::fs::File;
+use std::io::{self, BufReader};
+
 use crate::*;
 
 pub struct TcpUdpPipe<
@@ -40,7 +42,8 @@ impl<T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 
     pub async fn shuffle(self) -> Result<usize> {
         // todo: investigate https://docs.rs/tokio/0.2.22/tokio/net/struct.TcpStream.html#method.into_split
         let (mut tcp_rd, mut tcp_wr) = tokio::io::split(self.tcp_stream);
-        let (mut udp_rd, mut udp_wr) = self.udp_socket.split();
+        let udp_rd = Arc::new(self.udp_socket);
+        let udp_wr = udp_rd.clone();
         let mut recv_buf = self.buf.clone(); // or zeroed or?
 
         tokio::spawn(async move {
@@ -101,9 +104,9 @@ async fn send_udp<T: AsyncWriteExt + std::marker::Unpin + 'static>(
 
 impl ProxyClient {
     pub async fn start_async(&self) -> Result<usize> {
-        let tcp_stream = self.tcp_connect()?;
+        let tcp_stream = self.tcp_connect().await?;
 
-        let udp_socket = self.udp_connect()?;
+        let udp_socket = self.udp_connect().await?;
 
         TcpUdpPipe::new(tcp_stream, udp_socket)
             .shuffle_after_first_udp()
@@ -111,7 +114,7 @@ impl ProxyClient {
     }
 
     pub fn start(&self) -> Result<usize> {
-        let mut rt = Runtime::new()?;
+        let rt = Runtime::new()?;
 
         rt.block_on(async { self.start_async().await })
     }
@@ -121,7 +124,11 @@ impl ProxyClient {
         hostname: Option<&str>,
         pinnedpubkey: Option<&str>,
     ) -> Result<usize> {
-        let mut config = ClientConfig::new();
+        let root_cert_store = rustls::RootCertStore::empty();
+        let mut config = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(root_cert_store)
+            .with_no_client_auth(); // i guess this was previously the default?
         config
             .dangerous()
             .set_certificate_verifier(match pinnedpubkey {
@@ -131,28 +138,20 @@ impl ProxyClient {
                 None => Arc::new(DummyCertVerifier {}),
             });
 
-        let hostname = match hostname {
-            Some(hostname) => match DNSNameRef::try_from_ascii_str(hostname) {
-                Ok(hostname) => hostname,
-                Err(_) => {
-                    config.enable_sni = false;
-                    DNSNameRef::try_from_ascii_str(&"dummy.hostname").unwrap() // why does rustls ABSOLUTELY REQUIRE this ????
-                }
-            },
-            None => {
-                config.enable_sni = false;
-                DNSNameRef::try_from_ascii_str(&"dummy.hostname").unwrap() // why does rustls ABSOLUTELY REQUIRE this ????
-            }
-        };
+        let default_server_name = "dummy.hostname";
+        let server_name: rustls::ServerName = hostname
+            .unwrap_or("dummy.hostname")
+            .try_into()
+            .unwrap_or(default_server_name.try_into().unwrap());
         //println!("hostname: {:?}", hostname);
 
         let connector = TlsConnector::from(Arc::new(config));
 
-        let tcp_stream = self.tcp_connect()?;
+        let tcp_stream = self.tcp_connect().await?;
 
-        let tcp_stream = connector.connect(hostname, tcp_stream).await?;
+        let tcp_stream = connector.connect(server_name, tcp_stream).await?;
 
-        let udp_socket = self.udp_connect()?;
+        let udp_socket = self.udp_connect().await?;
 
         // we want to wait for first udp packet from client first, to set the target to respond to
         TcpUdpPipe::new(tcp_stream, udp_socket)
@@ -161,7 +160,7 @@ impl ProxyClient {
     }
 
     pub fn start_tls(&self, hostname: Option<&str>, pinnedpubkey: Option<&str>) -> Result<usize> {
-        let mut rt = Runtime::new()?;
+        let rt = Runtime::new()?;
 
         rt.block_on(async { self.start_tls_async(hostname, pinnedpubkey).await })
     }
@@ -169,16 +168,18 @@ impl ProxyClient {
 
 struct DummyCertVerifier;
 
-impl rustls::ServerCertVerifier for DummyCertVerifier {
+impl rustls::client::ServerCertVerifier for DummyCertVerifier {
     fn verify_server_cert(
         &self,
-        _roots: &rustls::RootCertStore,
-        _certs: &[rustls::Certificate],
-        _hostname: webpki::DNSNameRef<'_>,
-        _ocsp: &[u8],
-    ) -> core::result::Result<rustls::ServerCertVerified, rustls::TLSError> {
+        _end_entity: &rustls::Certificate,
+        _intermediates: &[rustls::Certificate],
+        _server_name: &rustls::ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp_response: &[u8],
+        _now: std::time::SystemTime,
+    ) -> core::result::Result<rustls::client::ServerCertVerified, rustls::Error> {
         // verify nothing, subject to MITM
-        Ok(rustls::ServerCertVerified::assertion())
+        Ok(rustls::client::ServerCertVerified::assertion())
     }
 }
 
@@ -186,19 +187,32 @@ struct PinnedpubkeyCertVerifier {
     pinnedpubkey: String,
 }
 
-impl rustls::ServerCertVerifier for PinnedpubkeyCertVerifier {
+fn pki_error(error: webpki::Error) -> rustls::Error {
+    use webpki::Error::*;
+    match error {
+        BadDer | BadDerTime => rustls::Error::InvalidCertificateEncoding,
+        InvalidSignatureForPublicKey => rustls::Error::InvalidCertificateSignature,
+        UnsupportedSignatureAlgorithm | UnsupportedSignatureAlgorithmForPublicKey => {
+            rustls::Error::InvalidCertificateSignatureType
+        }
+        e => rustls::Error::InvalidCertificateData(format!("invalid peer certificate: {}", e)),
+    }
+}
+
+impl rustls::client::ServerCertVerifier for PinnedpubkeyCertVerifier {
     fn verify_server_cert(
         &self,
-        _roots: &rustls::RootCertStore,
+        _end_entity: &rustls::Certificate,
         certs: &[rustls::Certificate],
-        _hostname: webpki::DNSNameRef<'_>,
-        _ocsp: &[u8],
-    ) -> core::result::Result<rustls::ServerCertVerified, rustls::TLSError> {
+        _server_name: &rustls::ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp_response: &[u8],
+        _now: std::time::SystemTime,
+    ) -> core::result::Result<rustls::client::ServerCertVerified, rustls::Error> {
         if certs.is_empty() {
-            return Err(rustls::TLSError::NoCertificatesPresented);
+            return Err(rustls::Error::NoCertificatesPresented);
         }
-        let cert = webpki::trust_anchor_util::cert_der_as_trust_anchor(&certs[0].0)
-            .map_err(rustls::TLSError::WebPKIError)?;
+        let cert = webpki::TrustAnchor::try_from_cert_der(&certs[0].0).map_err(pki_error)?;
 
         //println!("spki.len(): {}", cert.spki.len());
         //println!("spki: {:?}", cert.spki);
@@ -213,20 +227,34 @@ impl rustls::ServerCertVerifier for PinnedpubkeyCertVerifier {
 
         for key in self.pinnedpubkey.split(";") {
             if key == pubkey {
-                return Ok(rustls::ServerCertVerified::assertion());
+                return Ok(rustls::client::ServerCertVerified::assertion());
             }
         }
 
-        Err(rustls::TLSError::General(format!(
+        Err(rustls::Error::General(format!(
             "pubkey '{}' not found in allowed list '{}'",
             pubkey, self.pinnedpubkey
         )))
     }
 }
 
+fn load_certs(path: &str) -> io::Result<Vec<Certificate>> {
+    use rustls_pemfile::certs;
+    certs(&mut BufReader::new(File::open(path)?))
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
+        .map(|mut certs| certs.drain(..).map(Certificate).collect())
+}
+
+fn load_keys(path: &str) -> io::Result<Vec<PrivateKey>> {
+    use rustls_pemfile::pkcs8_private_keys;
+    pkcs8_private_keys(&mut BufReader::new(File::open(path)?))
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
+        .map(|mut keys| keys.drain(..).map(PrivateKey).collect())
+}
+
 impl ProxyServer {
     pub async fn start_async(&self) -> Result<()> {
-        let mut listener = tokio::net::TcpListener::bind(&self.tcp_host).await?;
+        let listener = tokio::net::TcpListener::bind(&self.tcp_host).await?;
         println!("Listening for connections on {}", &self.tcp_host);
 
         loop {
@@ -250,34 +278,22 @@ impl ProxyServer {
     }
 
     pub fn start(&self) -> Result<()> {
-        let mut rt = Runtime::new()?;
+        let rt = Runtime::new()?;
 
         rt.block_on(async { self.start_async().await })
     }
 
     pub async fn start_tls_async(&self, tls_key: &str, tls_cert: &str) -> Result<()> {
-        use std::fs::File;
-        use std::io;
-        use std::io::BufReader;
-        use tokio_rustls::rustls::internal::pemfile::{certs, pkcs8_private_keys};
-
-        let mut tls_key = pkcs8_private_keys(&mut BufReader::new(File::open(tls_key)?))
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?;
-        if tls_key.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?;
-        }
-        let tls_key = tls_key.remove(0);
-
-        let tls_cert = certs(&mut BufReader::new(File::open(tls_cert)?))
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))?;
-
-        let mut config = rustls::ServerConfig::new(rustls::NoClientAuth::new());
-        config
-            .set_single_cert(tls_cert, tls_key)
+        let certs = load_certs(tls_key)?;
+        let mut keys = load_keys(tls_cert)?;
+        let config = rustls::ServerConfig::builder()
+            .with_safe_defaults()
+            .with_no_client_auth()
+            .with_single_cert(certs, keys.remove(0))
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
 
-        let mut listener = tokio::net::TcpListener::bind(&self.tcp_host).await?;
+        let listener = tokio::net::TcpListener::bind(&self.tcp_host).await?;
         println!("Listening for TLS connections on {}", &self.tcp_host);
 
         loop {
@@ -308,7 +324,7 @@ impl ProxyServer {
     }
 
     pub fn start_tls(&self, tls_key: &str, tls_cert: &str) -> Result<()> {
-        let mut rt = Runtime::new()?;
+        let rt = Runtime::new()?;
 
         rt.block_on(async { self.start_tls_async(tls_key, tls_cert).await })
     }

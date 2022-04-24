@@ -1,4 +1,4 @@
-use std::net::{TcpStream, UdpSocket};
+use std::net::{UdpSocket};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -135,18 +135,14 @@ impl ProxyClient {
         }
     }
 
-    fn tcp_connect(&self) -> Result<tokio::net::TcpStream> {
-        let tcp_stream = TcpStream::connect(&self.tcp_target).expect("connect to tcp server failed?");
-        tcp_stream.set_read_timeout(self.socket_timeout)?;
-        let tcp_stream = tokio::net::TcpStream::from_std(tcp_stream).expect("how could this tokio tcp fail?");
-        Ok(tcp_stream)
+    async fn tcp_connect(&self) -> core::result::Result<tokio::net::TcpStream, std::io::Error> {
+        let tcp_stream = tokio::net::TcpStream::connect(&self.tcp_target).await;
+        tcp_stream
     }
 
-    fn udp_connect(&self) -> Result<tokio::net::UdpSocket> {
-        let udp_socket = UdpSocket::bind(&self.udp_host)?;
-        udp_socket.set_read_timeout(self.socket_timeout)?;
-        let udp_socket = tokio::net::UdpSocket::from_std(udp_socket).expect("how could this tokio udp fail?");
-        Ok(udp_socket)
+    async fn udp_connect(&self) -> core::result::Result<tokio::net::UdpSocket, std::io::Error> {
+        let udp_socket = tokio::net::UdpSocket::bind(&self.udp_host).await;
+        udp_socket
     }
 }
 
