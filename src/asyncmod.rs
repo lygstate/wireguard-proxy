@@ -1,55 +1,69 @@
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UdpSocket;
-use tokio::runtime::Runtime;
-use tokio_rustls::{rustls, rustls::Certificate, rustls::PrivateKey, webpki, TlsConnector};
-
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{self, BufReader};
+use std::net::SocketAddr;
+use std::sync::atomic::{self, AtomicI32};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+use tokio::net::UdpSocket;
+use tokio::runtime::Runtime;
+use tokio::sync;
+use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio_rustls::{rustls, rustls::Certificate, rustls::PrivateKey, webpki, TlsConnector};
 
 use crate::*;
 
-pub struct TcpUdpPipe<
-    T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 'static,
-> {
-    buf: [u8; 2050], // 2048 + 2 for len
-    tcp_stream: T,
-    udp_socket: UdpSocket,
+pub struct TcpUdpPipe {
+    duplex: DuplexStream,
+    rd: Receiver<Vec<u8>>,
+    wr: Sender<Vec<u8>>,
 }
 
-impl<T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 'static>
-    TcpUdpPipe<T>
-{
-    pub fn new(tcp_stream: T, udp_socket: UdpSocket) -> TcpUdpPipe<T> {
-        TcpUdpPipe {
-            tcp_stream,
-            udp_socket,
-            buf: [0u8; 2050],
-        }
+fn from(_: sync::mpsc::error::SendError<Vec<u8>>) -> std::io::Error {
+    return std::io::Error::last_os_error();
+}
+
+impl TcpUdpPipe {
+    pub fn create_pair() -> (TcpUdpPipe, TcpUdpPipe) {
+        let (duplex_0, duplex_1) = tokio::io::duplex(131_072);
+
+        let (snd_0, rcv_0) = mpsc::channel::<Vec<u8>>(1_1024);
+        let (snd_1, rcv_1) = mpsc::channel::<Vec<u8>>(1_1024);
+
+        let a = TcpUdpPipe {
+            duplex: duplex_0,
+            rd: rcv_0,
+            wr: snd_1,
+        };
+
+        let b = TcpUdpPipe {
+            duplex: duplex_1,
+            rd: rcv_1,
+            wr: snd_0,
+        };
+
+        (a, b)
     }
 
-    pub async fn shuffle_after_first_udp(mut self) -> std::io::Result<usize> {
-        let (len, src_addr) = self.udp_socket.recv_from(&mut self.buf[2..]).await?;
-
-        println!("first packet from {}, connecting to that", src_addr);
-        self.udp_socket.connect(src_addr).await?;
-
-        send_udp(&mut self.buf, &mut self.tcp_stream, len).await?;
-
-        self.shuffle().await
+    pub fn create_buf() -> [u8; 2050] {
+        [0u8; 2050] // 2048 + 2 for len
     }
 
     pub async fn shuffle(self) -> std::io::Result<usize> {
-        // todo: investigate https://docs.rs/tokio/0.2.22/tokio/net/struct.TcpStream.html#method.into_split
-        let (mut tcp_rd, mut tcp_wr) = tokio::io::split(self.tcp_stream);
-        let udp_rd = Arc::new(self.udp_socket);
-        let udp_wr = udp_rd.clone();
-        let mut recv_buf = self.buf.clone(); // or zeroed or?
+        let mut udp_rd = self.rd;
+        let mut recv_buf = TcpUdpPipe::create_buf();
+        let tcp_stream = self.duplex;
+        let (mut tcp_rd, mut tcp_wr) = tokio::io::split(tcp_stream);
 
-        tokio::spawn(async move {
+        let udp_rd_future = async move {
             loop {
-                let len = udp_rd.recv(&mut recv_buf[2..]).await?;
-                send_udp(&mut recv_buf, &mut tcp_wr, len).await?;
+                while let Some(bytes) = udp_rd.recv().await {
+                    let len = bytes.len();
+                    recv_buf[0] = ((len >> 8) & 0xFF) as u8;
+                    recv_buf[1] = (len & 0xFF) as u8;
+                    recv_buf[2..(len + 2)].copy_from_slice(bytes.as_slice());
+                    tcp_wr.write_all(&recv_buf[..(len + 2)]).await?;
+                }
             }
 
             // Sometimes, the rust type inferencer needs
@@ -61,19 +75,162 @@ impl<T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 
                 }
                 Ok::<_, std::io::Error>(())
             }
-        });
+        };
 
-        let mut send_buf = self.buf.clone(); // or zeroed or?
+        let mut send_buf = TcpUdpPipe::create_buf();
+        let udp_wr = self.wr;
+        let udp_wr_future = async move {
+            loop {
+                tcp_rd.read_exact(&mut send_buf[..2]).await?;
+                let len = ((send_buf[0] as usize) << 8) + send_buf[1] as usize;
+                #[cfg(feature = "verbose")]
+                println!("tcp expecting len: {}", len);
+                tcp_rd.read_exact(&mut send_buf[..len]).await?;
+                #[cfg(feature = "verbose")]
+                println!("tcp got len: {}", len);
+                if let Err(e) = udp_wr.send(send_buf[..len].to_vec()).await {
+                    return Err(from(e));
+                }
+            }
 
+            #[allow(unreachable_code)]
+            {
+                unsafe {
+                    std::hint::unreachable_unchecked();
+                }
+                Ok::<_, std::io::Error>(())
+            }
+        };
+        let join_result = tokio::try_join!(udp_rd_future, udp_wr_future);
+        match join_result {
+            Err(err) => Err(err),
+            Ok(_) => Ok(0),
+        }
+    }
+}
+
+enum TcpConnection {
+    // not pub because intern implementation
+    Normal(tokio::net::TcpStream),
+    Secure(tokio_rustls::client::TlsStream<tokio::net::TcpStream>),
+}
+
+impl TcpConnection {
+    pub fn from_tcp_stream(tcp_stream: tokio::net::TcpStream) -> TcpConnection {
+        TcpConnection::Normal(tcp_stream)
+    }
+
+    pub fn from_tls_tcp_stream(
+        tls_tcp_stream: tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
+    ) -> TcpConnection {
+        TcpConnection::Secure(tls_tcp_stream)
+    }
+
+    pub async fn connect(client: ProxyClient) -> std::io::Result<TcpConnection> {
+        let tcp_stream = tokio::net::TcpStream::connect(&client.tcp_target).await?;
+        if client.is_tls {
+            let root_cert_store = rustls::RootCertStore::empty();
+            let mut config = rustls::ClientConfig::builder()
+                .with_safe_defaults()
+                .with_root_certificates(root_cert_store)
+                .with_no_client_auth(); // i guess this was previously the default?
+            config
+                .dangerous()
+                .set_certificate_verifier(match client.pinnedpubkey {
+                    Some(pinnedpubkey) => Arc::new(PinnedpubkeyCertVerifier {
+                        pinnedpubkey: pinnedpubkey.to_owned(),
+                    }),
+                    None => Arc::new(DummyCertVerifier {}),
+                });
+
+            let default_server_name = "dummy.hostname";
+            let server_name: rustls::ServerName = client
+                .hostname
+                .as_deref()
+                .unwrap_or(default_server_name)
+                .try_into()
+                .unwrap_or(default_server_name.try_into().unwrap());
+            //println!("hostname: {:?}", hostname);
+
+            let connector = TlsConnector::from(Arc::new(config));
+            let tcp_stream = connector.connect(server_name, tcp_stream).await?;
+            Ok(TcpConnection::from_tls_tcp_stream(tcp_stream))
+        } else {
+            Ok(TcpConnection::from_tcp_stream(tcp_stream))
+        }
+    }
+}
+
+type WireguardConnectoinMap = HashMap<SocketAddr, (Sender<Vec<u8>>, Arc<AtomicI32>)>;
+
+impl ProxyClient {
+    pub fn update_connection_map(connection_map: &mut WireguardConnectoinMap) {
+        let mut timeout_addresses = Vec::<SocketAddr>::new();
+        for (k, (_, task_done)) in connection_map.into_iter() {
+            if task_done.load(atomic::Ordering::Acquire) == 0 {
+                timeout_addresses.push(*k);
+            }
+        }
+        for k in timeout_addresses {
+            connection_map.remove(&k);
+        }
+        connection_map.clear();
+    }
+
+    pub async fn start_async(&self) -> std::io::Result<usize> {
+        let mut connection_map = WireguardConnectoinMap::new();
+
+        let udp_socket = Arc::new(tokio::net::UdpSocket::bind(&self.udp_host).await?);
+        let buf = &mut TcpUdpPipe::create_buf();
         loop {
-            tcp_rd.read_exact(&mut send_buf[..2]).await?;
-            let len = ((send_buf[0] as usize) << 8) + send_buf[1] as usize;
-            #[cfg(feature = "verbose")]
-            println!("tcp expecting len: {}", len);
-            tcp_rd.read_exact(&mut send_buf[..len]).await?;
-            #[cfg(feature = "verbose")]
-            println!("tcp got len: {}", len);
-            udp_wr.send(&send_buf[..len]).await?;
+            let recv_result =
+                tokio::time::timeout(self.socket_timeout, udp_socket.recv_from(&mut buf[..])).await;
+            if let Ok(Ok((len, src_addr))) = recv_result {
+                if !connection_map.contains_key(&src_addr) {
+                    let udp_socket_cloned = udp_socket.clone();
+                    let src_addr_cloned = src_addr.clone();
+
+                    let (pipe_outer, pipe_inner) = TcpUdpPipe::create_pair();
+                    let outer_duplex = pipe_outer.duplex;
+                    let rd = pipe_outer.rd;
+                    let client_info = self.clone();
+                    let task_done = Arc::new(AtomicI32::new(1));
+                    let task_done_cloned = task_done.clone();
+                    tokio::spawn(async move {
+                        client_info
+                            .shuffle(
+                                udp_socket_cloned,
+                                task_done_cloned,
+                                src_addr_cloned,
+                                outer_duplex,
+                                pipe_inner,
+                                rd,
+                            )
+                            .await
+                    });
+
+                    connection_map.insert(src_addr, (pipe_outer.wr, task_done));
+                }
+                if let Some((wr, _)) = connection_map.get(&src_addr) {
+                    if let Err(e) = wr.send(buf[..len].to_vec()).await {
+                        return Err(from(e));
+                    }
+                }
+            } else if let Err(e) = recv_result {
+                println!(
+                    "There is udp socket receive timeout {} map size: {}",
+                    e,
+                    connection_map.len()
+                );
+                ProxyClient::update_connection_map(&mut connection_map);
+            } else if let Ok(Err(e)) = recv_result {
+                println!(
+                    "There is udp socket error {} map size: {}",
+                    e,
+                    connection_map.len()
+                );
+                ProxyClient::update_connection_map(&mut connection_map);
+            }
         }
 
         #[allow(unreachable_code)]
@@ -81,92 +238,79 @@ impl<T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 
             unsafe {
                 std::hint::unreachable_unchecked();
             }
-            Ok(0)
+            Ok::<_, std::io::Error>(0)
         }
     }
-}
 
-async fn send_udp<T: AsyncWriteExt + std::marker::Unpin + 'static>(
-    buf: &mut [u8; 2050],
-    tcp_stream: &mut T,
-    len: usize,
-) -> std::io::Result<()> {
-    #[cfg(feature = "verbose")]
-    println!("udp got len: {}", len);
+    pub async fn shuffle(
+        self,
+        udp_socket: Arc<UdpSocket>,
+        task_done: Arc<AtomicI32>,
+        src_addr: SocketAddr,
+        mut outer_duplex: DuplexStream,
+        pipe_inner: TcpUdpPipe,
+        mut rd: Receiver<Vec<u8>>,
+    ) -> std::io::Result<usize> {
+        println!("first packet from {}, connecting to that", src_addr);
+        let socket_timeout = self.socket_timeout;
+        let tcp_connection = TcpConnection::connect(self).await?;
+        let (future0, future0_abort) = futures::future::abortable(async move {
+            match tcp_connection {
+                TcpConnection::Normal(mut tcp_stream) => {
+                    tokio::io::copy_bidirectional(&mut tcp_stream, &mut outer_duplex).await
+                }
+                TcpConnection::Secure(mut tls_tcp_stream) => {
+                    tokio::io::copy_bidirectional(&mut tls_tcp_stream, &mut outer_duplex).await
+                }
+            }
+        });
+        let (future1, future1_abort) = futures::future::abortable(async move {
+            if let Err(e) = pipe_inner.shuffle().await {
+                println!("wireguard shuffle finished with {}", e);
+            }
+        });
+        let (future2, future2_abort) = futures::future::abortable(async move {
+            loop {
+                let recv_result = tokio::time::timeout(socket_timeout, rd.recv()).await;
+                if let Ok(Some(v)) = recv_result {
+                    udp_socket.send_to(&v, src_addr).await?;
+                } else if let Err(e) = recv_result {
+                    /* Receive timeout */
+                    rd.close();
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        e.to_string(),
+                    ));
+                }
+            }
+            #[allow(unreachable_code)]
+            {
+                unsafe {
+                    std::hint::unreachable_unchecked();
+                }
+                Ok::<_, std::io::Error>(())
+            }
+        });
+        let join_result = tokio::try_join!(future0, future1, future2);
+        let ret = match join_result {
+            Ok(_) => Ok(0),
+            Err(e) => {
+                println!("shuffle done for {} {}", src_addr, e);
+                Ok(0)
+            }
+        };
+        task_done.store(0, atomic::Ordering::Release);
+        future0_abort.abort();
+        future1_abort.abort();
+        future2_abort.abort();
 
-    buf[0] = ((len >> 8) & 0xFF) as u8;
-    buf[1] = (len & 0xFF) as u8;
-
-    // todo: tcp_stream.write_all(&buf[..len + 2]).await
-    Ok(tcp_stream.write_all(&buf[..len + 2]).await?)
-    // todo: do this? self.tcp_stream.flush()
-}
-
-impl ProxyClient {
-    pub async fn start_async(&self) -> std::io::Result<usize> {
-        let tcp_stream = self.tcp_connect().await?;
-
-        let udp_socket = self.udp_bind().await?;
-
-        TcpUdpPipe::new(tcp_stream, udp_socket)
-            .shuffle_after_first_udp()
-            .await
+        ret
     }
 
     pub fn start(&self) -> std::io::Result<usize> {
         let rt = Runtime::new()?;
 
         rt.block_on(async { self.start_async().await })
-    }
-
-    pub async fn start_tls_async(
-        &self,
-        hostname: Option<&str>,
-        pinnedpubkey: Option<&str>,
-    ) -> std::io::Result<usize> {
-        let root_cert_store = rustls::RootCertStore::empty();
-        let mut config = rustls::ClientConfig::builder()
-            .with_safe_defaults()
-            .with_root_certificates(root_cert_store)
-            .with_no_client_auth(); // i guess this was previously the default?
-        config
-            .dangerous()
-            .set_certificate_verifier(match pinnedpubkey {
-                Some(pinnedpubkey) => Arc::new(PinnedpubkeyCertVerifier {
-                    pinnedpubkey: pinnedpubkey.to_owned(),
-                }),
-                None => Arc::new(DummyCertVerifier {}),
-            });
-
-        let default_server_name = "dummy.hostname";
-        let server_name: rustls::ServerName = hostname
-            .unwrap_or("dummy.hostname")
-            .try_into()
-            .unwrap_or(default_server_name.try_into().unwrap());
-        //println!("hostname: {:?}", hostname);
-
-        let connector = TlsConnector::from(Arc::new(config));
-
-        let tcp_stream = self.tcp_connect().await?;
-
-        let tcp_stream = connector.connect(server_name, tcp_stream).await?;
-
-        let udp_socket = self.udp_bind().await?;
-
-        // we want to wait for first udp packet from client first, to set the target to respond to
-        TcpUdpPipe::new(tcp_stream, udp_socket)
-            .shuffle_after_first_udp()
-            .await
-    }
-
-    pub fn start_tls(
-        &self,
-        hostname: Option<&str>,
-        pinnedpubkey: Option<&str>,
-    ) -> std::io::Result<usize> {
-        let rt = Runtime::new()?;
-
-        rt.block_on(async { self.start_tls_async(hostname, pinnedpubkey).await })
     }
 }
 
@@ -341,11 +485,9 @@ impl ProxyServerClientHandler {
         &self,
         tcp_stream: T,
     ) -> std::io::Result<usize> {
-        TcpUdpPipe::new(
-            tcp_stream,
-            UdpSocket::from_std(self.udp_bind()?).expect("how could this tokio udp fail?"),
-        )
-        .shuffle()
-        .await
+        let _udp_socket =
+            UdpSocket::from_std(self.udp_bind()?).expect("how could this tokio udp fail?");
+
+        Ok(0)
     }
 }

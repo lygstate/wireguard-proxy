@@ -85,10 +85,14 @@ impl<'a> Args<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct ProxyClient {
     pub udp_host: String,
     pub tcp_target: String,
-    pub socket_timeout: Option<Duration>,
+    pub socket_timeout: Duration,
+    pub is_tls: bool,
+    pub hostname: Option<String>,
+    pub pinnedpubkey: Option<String>,
 }
 
 pub struct ProxyServer {
@@ -114,21 +118,17 @@ impl ProxyClient {
         ProxyClient {
             udp_host,
             tcp_target,
-            socket_timeout: match secs {
-                0 => None,
-                x => Some(Duration::from_secs(x)),
+            socket_timeout: {
+                if secs != 0 {
+                    Duration::from_secs(secs)
+                } else {
+                    Duration::new(u64::MAX, u32::MAX)
+                }
             },
+            is_tls: false,
+            hostname: None,
+            pinnedpubkey: None,
         }
-    }
-
-    async fn tcp_connect(&self) -> std::io::Result<tokio::net::TcpStream> {
-        let tcp_stream = tokio::net::TcpStream::connect(&self.tcp_target).await;
-        tcp_stream
-    }
-
-    async fn udp_bind(&self) -> std::io::Result<tokio::net::UdpSocket> {
-        let udp_socket = tokio::net::UdpSocket::bind(&self.udp_host).await;
-        udp_socket
     }
 }
 

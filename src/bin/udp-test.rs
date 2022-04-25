@@ -281,35 +281,29 @@ fn main() {
         );
         thread::sleep(sleep);
 
-        let proxy_client = ProxyClient::new("127.0.0.1:51820".to_owned(), tcp_host.to_owned(), 15);
+        let mut proxy_client =
+            ProxyClient::new("127.0.0.1:51820".to_owned(), tcp_host.to_owned(), 15);
 
         println!(
             "udp_host: {}, tcp_target: {}, socket_timeout: {:?}",
             proxy_client.udp_host, proxy_client.tcp_target, proxy_client.socket_timeout,
         );
 
+        proxy_client.is_tls = tls;
         if tls {
-            let hostname = tcp_host.split(":").next();
-            let pinnedpubkey = pinnedpubkey.as_ref().map(String::as_str);
-            match pinnedpubkey {
-                Some(pinnedpubkey) => println!(
+            proxy_client.hostname = tcp_host.split(":").next().map(&str::to_owned);
+            proxy_client.pinnedpubkey = pinnedpubkey;
+            match proxy_client.pinnedpubkey {
+                Some(ref pinnedpubkey) => println!(
                     "executing: wireguard-proxy -tt {} --tls --pinnedpubkey {}",
                     tcp_host, pinnedpubkey
                 ),
                 None => println!("executing: wireguard-proxy -tt {} --tls", tcp_host),
             }
-            // this is a little funky, is this the only way to do it?
-            let pinnedpubkey = pinnedpubkey.map(&str::to_owned);
-            // can use pinnedpubkey.as_deref() below when it's stabilized
-            thread::spawn(move || {
-                proxy_client
-                    .start_tls(hostname, pinnedpubkey.as_ref().map(String::as_str))
-                    .expect("error running proxy_client")
-            });
         } else {
             println!("executing: wireguard-proxy -tt {}", tcp_host);
-            thread::spawn(move || proxy_client.start().expect("error running proxy_client"));
         }
+        thread::spawn(move || proxy_client.start().expect("error running proxy_client"));
         println!(
             "waiting: {:?} for wireguard-proxy client to come up.....",
             sleep

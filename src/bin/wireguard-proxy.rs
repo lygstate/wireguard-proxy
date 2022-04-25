@@ -105,34 +105,27 @@ fn main() {
 }
 
 fn client(tcp_target: &str, socket_timeout: u64, args: Args) {
-    let proxy_client = ProxyClient::new(
+    let mut proxy_client = ProxyClient::new(
         args.get_str(&["-uh", "--udp-host"], "127.0.0.1:51820")
             .to_owned(),
         tcp_target.to_owned(),
         socket_timeout,
     );
 
-    let tls = args.flag("--tls");
+    proxy_client.is_tls = args.flag("--tls");
 
     println!(
         "udp_host: {}, tcp_target: {}, socket_timeout: {:?}, tls: {}",
-        proxy_client.udp_host, proxy_client.tcp_target, proxy_client.socket_timeout, tls,
+        proxy_client.udp_host, proxy_client.tcp_target, proxy_client.socket_timeout, proxy_client.is_tls,
     );
 
-    if tls {
-        let hostname = args
+    if proxy_client.is_tls {
+        proxy_client.hostname = args
             .get_option(&["--tls-hostname"])
             .or_else(|| tcp_target.split(":").next().map(&str::to_owned));
-        let pinnedpubkey = args.get_option(&["--pinnedpubkey"]);
-        proxy_client
-            .start_tls(
-                hostname.as_ref().map(String::as_str),
-                pinnedpubkey.as_ref().map(String::as_str),
-            )
-            .expect("error running tls proxy_client");
-    } else {
-        proxy_client.start().expect("error running proxy_client");
+        proxy_client.pinnedpubkey = args.get_option(&["--pinnedpubkey"]);
     }
+    proxy_client.start().expect("error running proxy_client");
 }
 
 fn server(tcp_host: &str, socket_timeout: u64, args: Args) {
