@@ -116,7 +116,8 @@ fn main() {
 
     let mut first_arg = args.get_str(&["-uh", "--udp-host"], default_udp_host_target);
     if args.flag("-h") || args.flag("--help") {
-        println!(r#"usage: udp-test [options...]
+        println!(
+            r#"usage: udp-test [options...]
  -h, --help                      print this usage text
  -V, --version                   Show version number and TLS support then quit
  -s, --self-test                 run a self test through proxy
@@ -153,7 +154,9 @@ fn main() {
    --socket-timeout 5 is WGP_SOCKET_TIMEOUT=5
    --tls is WGP_TLS=1 or WGP_TLS=true
    WGP_TLS=0 or WGP_TLS=false would be like not sending --tls
-        "#, default_udp_host_target, default_udp_host_target, default_socket_timeout);
+        "#,
+            default_udp_host_target, default_udp_host_target, default_socket_timeout
+        );
         return;
     } else if args.flag("-s") || args.flag("--self-test") {
         // here is the hard work, we need to spawn proxyd and proxy from the same dir as udp-test...
@@ -162,7 +165,9 @@ fn main() {
         let sleep = Duration::from_secs(5);
 
         let udp_test = std::env::current_exe().expect("cannot get path to current executable");
-        let proxy = udp_test.clone().with_file_name("wireguard-proxy")
+        let proxy = udp_test
+            .clone()
+            .with_file_name("wireguard-proxy")
             .with_extension(udp_test.extension().unwrap_or_else(|| "".as_ref()));
 
         let udp_test = udp_test.to_str().expect("non-utf8 executable path?");
@@ -180,10 +185,13 @@ fn main() {
 
         println!("executing: {} {}", proxy, proxyd_args.join(" "));
         let mut proxyd = Command::new(proxy.clone())
-                .args(&proxyd_args)
-                .spawn()
-                .expect("wireguard-proxy server failed to launch");
-        println!("waiting: {:?} for wireguard-proxy server to come up.....", sleep);
+            .args(&proxyd_args)
+            .spawn()
+            .expect("wireguard-proxy server failed to launch");
+        println!(
+            "waiting: {:?} for wireguard-proxy server to come up.....",
+            sleep
+        );
         thread::sleep(sleep);
 
         let mut proxy_args = vec!["-tt", tcp_host];
@@ -199,10 +207,13 @@ fn main() {
 
         println!("executing: {} {}", proxy, proxy_args.join(" "));
         let mut proxy = Command::new(proxy)
-                .args(proxy_args)
-                .spawn()
-                .expect("wireguard-proxy TLS client failed to launch");
-        println!("waiting: {:?} for wireguard-proxy client to come up.....", sleep);
+            .args(proxy_args)
+            .spawn()
+            .expect("wireguard-proxy TLS client failed to launch");
+        println!(
+            "waiting: {:?} for wireguard-proxy client to come up.....",
+            sleep
+        );
         thread::sleep(sleep);
 
         println!("executing: {} -uh '{}'", udp_test, host);
@@ -248,46 +259,61 @@ fn main() {
         if tls {
             let tls_key = tls_key.unwrap().to_owned();
             let tls_cert = tls_cert.unwrap().to_owned();
-            println!("executing: wireguard-proxy -th '{}' -ut '{}' -tk '{}' -tc '{}'", tcp_host, host, tls_key, tls_cert);
-            thread::spawn(move || proxy_server.start_tls(&tls_key, &tls_cert).expect("error running TLS proxy_server"));
+            println!(
+                "executing: wireguard-proxy -th '{}' -ut '{}' -tk '{}' -tc '{}'",
+                tcp_host, host, tls_key, tls_cert
+            );
+            thread::spawn(move || {
+                proxy_server
+                    .start_tls(&tls_key, &tls_cert)
+                    .expect("error running TLS proxy_server")
+            });
         } else {
-            println!("executing: wireguard-proxy -th '{}' -ut '{}'", tcp_host, host);
+            println!(
+                "executing: wireguard-proxy -th '{}' -ut '{}'",
+                tcp_host, host
+            );
             thread::spawn(move || proxy_server.start().expect("error running proxy_server"));
         }
-        println!("waiting: {:?} for wireguard-proxy server to come up.....", sleep);
+        println!(
+            "waiting: {:?} for wireguard-proxy server to come up.....",
+            sleep
+        );
         thread::sleep(sleep);
 
-        let proxy_client = ProxyClient::new(
-            "127.0.0.1:51820".to_owned(),
-            tcp_host.to_owned(),
-            15,
-        );
+        let proxy_client = ProxyClient::new("127.0.0.1:51820".to_owned(), tcp_host.to_owned(), 15);
 
         println!(
             "udp_host: {}, tcp_target: {}, socket_timeout: {:?}",
-            proxy_client.udp_host,
-            proxy_client.tcp_target,
-            proxy_client.socket_timeout,
+            proxy_client.udp_host, proxy_client.tcp_target, proxy_client.socket_timeout,
         );
 
         if tls {
             let hostname = tcp_host.split(":").next();
             let pinnedpubkey = pinnedpubkey.as_ref().map(String::as_str);
             match pinnedpubkey {
-                Some(pinnedpubkey) =>
-                    println!("executing: wireguard-proxy -tt {} --tls --pinnedpubkey {}", tcp_host, pinnedpubkey),
-                None =>
-                    println!("executing: wireguard-proxy -tt {} --tls", tcp_host),
+                Some(pinnedpubkey) => println!(
+                    "executing: wireguard-proxy -tt {} --tls --pinnedpubkey {}",
+                    tcp_host, pinnedpubkey
+                ),
+                None => println!("executing: wireguard-proxy -tt {} --tls", tcp_host),
             }
             // this is a little funky, is this the only way to do it?
             let pinnedpubkey = pinnedpubkey.map(&str::to_owned);
             // can use pinnedpubkey.as_deref() below when it's stabilized
-            thread::spawn(move || proxy_client.start_tls(hostname, pinnedpubkey.as_ref().map(String::as_str)).expect("error running proxy_client"));
+            thread::spawn(move || {
+                proxy_client
+                    .start_tls(hostname, pinnedpubkey.as_ref().map(String::as_str))
+                    .expect("error running proxy_client")
+            });
         } else {
             println!("executing: wireguard-proxy -tt {}", tcp_host);
             thread::spawn(move || proxy_client.start().expect("error running proxy_client"));
         }
-        println!("waiting: {:?} for wireguard-proxy client to come up.....", sleep);
+        println!(
+            "waiting: {:?} for wireguard-proxy client to come up.....",
+            sleep
+        );
         thread::sleep(sleep);
 
         first_arg = host.to_owned();
@@ -295,7 +321,8 @@ fn main() {
 
     let server = Server::new(
         first_arg.to_owned(),
-        args.get_str(&["-ut", "--udp-target"], default_udp_host_target).to_owned(),
+        args.get_str(&["-ut", "--udp-target"], default_udp_host_target)
+            .to_owned(),
         args.get(&["-st", "--socket-timeout"], default_socket_timeout),
     );
 
