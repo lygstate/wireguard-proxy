@@ -3,9 +3,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-mod error;
-use error::Result;
-
 fn arg_to_env(arg: &str) -> Option<String> {
     if !arg.starts_with("--") {
         return None;
@@ -124,12 +121,12 @@ impl ProxyClient {
         }
     }
 
-    async fn tcp_connect(&self) -> core::result::Result<tokio::net::TcpStream, std::io::Error> {
+    async fn tcp_connect(&self) -> std::io::Result<tokio::net::TcpStream> {
         let tcp_stream = tokio::net::TcpStream::connect(&self.tcp_target).await;
         tcp_stream
     }
 
-    async fn udp_bind(&self) -> core::result::Result<tokio::net::UdpSocket, std::io::Error> {
+    async fn udp_bind(&self) -> std::io::Result<tokio::net::UdpSocket> {
         let udp_socket = tokio::net::UdpSocket::bind(&self.udp_host).await;
         udp_socket
     }
@@ -162,7 +159,7 @@ impl ProxyServer {
 }
 
 impl ProxyServerClientHandler {
-    fn udp_bind(&self) -> Result<UdpSocket> {
+    fn udp_bind(&self) -> std::io::Result<UdpSocket> {
         let mut port = self.udp_low_port;
         let udp_socket = loop {
             match UdpSocket::bind((&self.udp_host[..], port)) {

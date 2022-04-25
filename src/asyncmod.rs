@@ -28,7 +28,7 @@ impl<T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 
         }
     }
 
-    pub async fn shuffle_after_first_udp(mut self) -> Result<usize> {
+    pub async fn shuffle_after_first_udp(mut self) -> std::io::Result<usize> {
         let (len, src_addr) = self.udp_socket.recv_from(&mut self.buf[2..]).await?;
 
         println!("first packet from {}, connecting to that", src_addr);
@@ -39,7 +39,7 @@ impl<T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 
         self.shuffle().await
     }
 
-    pub async fn shuffle(self) -> Result<usize> {
+    pub async fn shuffle(self) -> std::io::Result<usize> {
         // todo: investigate https://docs.rs/tokio/0.2.22/tokio/net/struct.TcpStream.html#method.into_split
         let (mut tcp_rd, mut tcp_wr) = tokio::io::split(self.tcp_stream);
         let udp_rd = Arc::new(self.udp_socket);
@@ -59,7 +59,7 @@ impl<T: AsyncReadExt + AsyncWriteExt + std::marker::Unpin + std::marker::Send + 
                 unsafe {
                     std::hint::unreachable_unchecked();
                 }
-                Ok::<_, error::Error>(())
+                Ok::<_, std::io::Error>(())
             }
         });
 
@@ -90,7 +90,7 @@ async fn send_udp<T: AsyncWriteExt + std::marker::Unpin + 'static>(
     buf: &mut [u8; 2050],
     tcp_stream: &mut T,
     len: usize,
-) -> Result<()> {
+) -> std::io::Result<()> {
     #[cfg(feature = "verbose")]
     println!("udp got len: {}", len);
 
@@ -103,7 +103,7 @@ async fn send_udp<T: AsyncWriteExt + std::marker::Unpin + 'static>(
 }
 
 impl ProxyClient {
-    pub async fn start_async(&self) -> Result<usize> {
+    pub async fn start_async(&self) -> std::io::Result<usize> {
         let tcp_stream = self.tcp_connect().await?;
 
         let udp_socket = self.udp_bind().await?;
@@ -113,7 +113,7 @@ impl ProxyClient {
             .await
     }
 
-    pub fn start(&self) -> Result<usize> {
+    pub fn start(&self) -> std::io::Result<usize> {
         let rt = Runtime::new()?;
 
         rt.block_on(async { self.start_async().await })
@@ -123,7 +123,7 @@ impl ProxyClient {
         &self,
         hostname: Option<&str>,
         pinnedpubkey: Option<&str>,
-    ) -> Result<usize> {
+    ) -> std::io::Result<usize> {
         let root_cert_store = rustls::RootCertStore::empty();
         let mut config = rustls::ClientConfig::builder()
             .with_safe_defaults()
@@ -159,7 +159,11 @@ impl ProxyClient {
             .await
     }
 
-    pub fn start_tls(&self, hostname: Option<&str>, pinnedpubkey: Option<&str>) -> Result<usize> {
+    pub fn start_tls(
+        &self,
+        hostname: Option<&str>,
+        pinnedpubkey: Option<&str>,
+    ) -> std::io::Result<usize> {
         let rt = Runtime::new()?;
 
         rt.block_on(async { self.start_tls_async(hostname, pinnedpubkey).await })
@@ -253,7 +257,7 @@ fn load_keys(path: &str) -> io::Result<Vec<PrivateKey>> {
 }
 
 impl ProxyServer {
-    pub async fn start_async(&self) -> Result<()> {
+    pub async fn start_async(&self) -> std::io::Result<()> {
         let listener = tokio::net::TcpListener::bind(&self.tcp_host).await?;
         println!("Listening for connections on {}", &self.tcp_host);
 
@@ -277,13 +281,13 @@ impl ProxyServer {
         }
     }
 
-    pub fn start(&self) -> Result<()> {
+    pub fn start(&self) -> std::io::Result<()> {
         let rt = Runtime::new()?;
 
         rt.block_on(async { self.start_async().await })
     }
 
-    pub async fn start_tls_async(&self, tls_key: &str, tls_cert: &str) -> Result<()> {
+    pub async fn start_tls_async(&self, tls_key: &str, tls_cert: &str) -> std::io::Result<()> {
         let certs = load_certs(tls_key)?;
         let mut keys = load_keys(tls_cert)?;
         let config = rustls::ServerConfig::builder()
@@ -323,7 +327,7 @@ impl ProxyServer {
         }
     }
 
-    pub fn start_tls(&self, tls_key: &str, tls_cert: &str) -> Result<()> {
+    pub fn start_tls(&self, tls_key: &str, tls_cert: &str) -> std::io::Result<()> {
         let rt = Runtime::new()?;
 
         rt.block_on(async { self.start_tls_async(tls_key, tls_cert).await })
@@ -336,7 +340,7 @@ impl ProxyServerClientHandler {
     >(
         &self,
         tcp_stream: T,
-    ) -> Result<usize> {
+    ) -> std::io::Result<usize> {
         TcpUdpPipe::new(
             tcp_stream,
             UdpSocket::from_std(self.udp_bind()?).expect("how could this tokio udp fail?"),
